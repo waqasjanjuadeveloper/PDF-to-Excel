@@ -2,7 +2,15 @@
   "version": 2,
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/convert",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/download/:job_id",
       "destination": "/api/index"
     }
   ],

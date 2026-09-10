@@ -194,21 +194,6 @@ def download(job_id):
     if not output.exists(): return jsonify(error="File not found or expired. Please use the backup download."), 404
     return send_file(output, as_attachment=True, download_name="converted.xlsx")
 
-# Vercel Path Fixer Middleware
-# Vercel rewrites often change PATH_INFO to the function name (e.g., /api/index)
-# which causes Flask to return 404 because the route doesn't match.
-# This middleware restores the original path from the 'x-matched-path' header.
-class VercelMiddleware:
-    def __init__(self, wsgi_app):
-        self.wsgi_app = wsgi_app
-    def __call__(self, environ, start_response):
-        matched_path = environ.get('HTTP_X_MATCHED_PATH')
-        if matched_path:
-            environ['PATH_INFO'] = matched_path
-        return self.wsgi_app(environ, start_response)
-
-app.wsgi_app = VercelMiddleware(app.wsgi_app)
-
 @app.errorhandler(404)
 def not_found(e):
     return jsonify(error="Not Found", message="The requested URL was not found on the server.", path=request.path), 404
