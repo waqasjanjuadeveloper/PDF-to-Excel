@@ -12,6 +12,7 @@ import pdfplumber
 import pandas as pd
 
 # Standard Vercel Flask configuration
+# The templates folder is located at the project root, one level up from this file.
 app = Flask(__name__, template_folder='../templates')
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
@@ -36,8 +37,7 @@ DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
 MONEY_RE = re.compile(r"-?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}|\.\d{2}")
 
 def clean_cell(value):
-    if value is None:
-        return ""
+    if value is None: return ""
     return re.sub(r"\s+", " ", str(value)).strip()
 
 def words_by_y(page):
@@ -163,10 +163,6 @@ def make_excel(job_dir, records, page_records, total_pages):
 def index():
     return render_template("index.html")
 
-@app.route("/api/health")
-def health():
-    return jsonify(status="ok")
-
 @app.post("/api/convert")
 def convert():
     ensure_base()
@@ -197,6 +193,21 @@ def download(job_id):
     output = job_dir / "converted.xlsx"
     if not output.exists(): return jsonify(error="File not found or expired. Please use the backup download."), 404
     return send_file(output, as_attachment=True, download_name="converted.xlsx")
+
+# Vercel Path Fixer Middleware
+# Vercel rewrites often change PATH_INFO to the function name (e.g., /api/index)
+# which causes Flask to return 404 because the route doesn't match.
+# This middleware restores the original path from the 'x-matched-path' header.
+class VercelMiddleware:
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+    def __call__(self, environ, start_response):
+        matched_path = environ.get('HTTP_X_MATCHED_PATH')
+        if matched_path:
+            environ['PATH_INFO'] = matched_path
+        return self.wsgi_app(environ, start_response)
+
+app.wsgi_app = VercelMiddleware(app.wsgi_app)
 
 @app.errorhandler(404)
 def not_found(e):
