@@ -766,7 +766,30 @@ $("convert").onclick = async () => {
     $("rows").textContent = data.rows;
     $("sheets").textContent = data.sheets;
 
-    $("download").href = "/api/download/" + data.job_id;
+    // Set download href but also add a click handler for base64 fallback
+    const downloadBtn = $("download");
+    downloadBtn.href = "/api/download/" + data.job_id;
+
+    downloadBtn.onclick = (e) => {
+      if (data.excel_data) {
+        e.preventDefault();
+        const binaryString = window.atob(data.excel_data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = data.filename || 'converted.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      }
+    };
 
     setTimeout(() => {
       $("processing").classList.add("hidden");

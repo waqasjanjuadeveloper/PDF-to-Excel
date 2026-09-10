@@ -6,11 +6,14 @@ import uuid
 import re
 import shutil
 import os
+import base64
 
 import pdfplumber
 import pandas as pd
 
-app = Flask(__name__, template_folder="templates")
+# Fix template folder path for Vercel
+template_dir = str(Path(__file__).parent.parent / "templates")
+app = Flask(__name__, template_folder=template_dir)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 # For Vercel, we must use /tmp for writable files
@@ -40,18 +43,6 @@ def clean_cell(value):
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
-def split_balance_due(value):
-    """Split values such as 115,358.0030/08/2024 into balance and due date."""
-    value = clean_cell(value)
-    dates = DATE_RE.findall(value)
-    due_date = dates[-1] if dates else ""
-    if due_date:
-        balance = value[:value.rfind(due_date)].strip()
-    else:
-        balance = value
-    return balance, due_date
-
-
 def words_by_y(page):
     words = page.extract_words(
         x_tolerance=1,
@@ -67,21 +58,7 @@ def words_by_y(page):
     return groups
 
 
-def is_transaction_start(line):
-    if not line:
-        return False
-    first = line[0]["text"].strip()
-    return bool(DATE_RE.fullmatch(first)) and len(line) >= 3
-
-
 def extract_ledger_page(page):
-    """Extract the supplied Customer Ledger without comma-splitting or
-    mixing the next transaction's wrapped text into the previous row.
-
-    The PDF sometimes prints a transaction's Number/Customer Reference
-    continuation immediately BEFORE its Date line. We therefore move that
-    single pre-date line to the transaction that follows it.
-    """
     groups = words_by_y(page)
     lines = [(y, groups[y]) for y in sorted(groups)]
 
@@ -93,9 +70,6 @@ def extract_ledger_page(page):
     records = []
     start_indices = []
     for date_idx in date_indices:
-        # Some rows in this PDF have the transaction number and the first
-        # customer-reference words on the line immediately before the Date.
-        # Attach that line to the transaction that follows it.
         start_idx = date_idx
         if date_idx > 0:
             prev_line = lines[date_idx - 1][1]
@@ -103,9 +77,6 @@ def extract_ledger_page(page):
                 w["text"].strip() for w in prev_line
                 if 85 <= float(w["x0"]) < 155
             ]
-            # A real transaction number in this report contains at least one
-            # digit (e.g. D240..., S240..., MRV2409-...). The header word
-            # "Number" must never be treated as a transaction number.
             has_number = any(re.search(r"\d", value) for value in pre_number_words)
             has_reference = any(155 <= float(w["x0"]) < 323 for w in prev_line)
             prev_is_date = bool(prev_line and DATE_RE.fullmatch(prev_line[0]["text"].strip()))
@@ -127,8 +98,6 @@ def extract_ledger_page(page):
         ref_date_words = []
         amount_words = {"debit": [], "credit": [], "pdc": [], "balance": []}
 
-        # Extract the fixed-position columns from every line belonging to
-        # this transaction. Customer Reference is NEVER split on commas.
         for _, line in transaction_lines:
             for word in line:
                 text = clean_cell(word["text"])
@@ -144,8 +113,6 @@ def extract_ledger_page(page):
                     customer_parts.append(text)
                     continue
                 if 323 <= x0 < 410:
-                    # Ref. Date is its own column. Never merge this area into
-                    # Customer Reference.
                     if DATE_RE.search(text):
                         ref_date_words.append(text)
                     continue
@@ -200,7 +167,6 @@ def extract_ledger(pdf_path):
 
 
 def extract_tables(pdf_path):
-    """Fallback generic table extraction for PDFs that are not this ledger."""
     tables = []
     with pdfplumber.open(pdf_path) as pdf:
         for page_no, page in enumerate(pdf.pages, start=1):
@@ -294,13 +260,18 @@ def convert():
         records, page_records, ledger_pages = extract_ledger(pdf_path)
         output = make_excel(job_dir, records, page_records, total_pages)
 
+        # Base64 encoded Excel for fallback download in stateless serverless
+        with open(output, "rb") as f:
+            excel_data = base64.b64encode(f.read()).decode("utf-8")
+
         return jsonify(
             job_id=job_id,
-            filename=output.name,
+            filename="converted.xlsx",
             pages=total_pages,
             rows=len(records),
             sheets=(1 + ledger_pages) if records else 1,
-            message=f"Successfully extracted {len(records)} ledger rows from all {total_pages} pages.",
+            excel_data=excel_data,
+            message=f"Successfully extracted {len(records)} ledger rows.",
         )
     except Exception as error:
         print(f"Conversion error: {error}")
@@ -310,10 +281,11 @@ def convert():
 
 @app.get("/api/download/<job_id>")
 def download(job_id):
+    ensure_base()
     job_dir = BASE / secure_filename(job_id)
     output = job_dir / "converted.xlsx"
     if not output.exists():
-        return jsonify(error="File not found or expired."), 404
+        return jsonify(error="File not found or expired. Please use the backup download."), 404
     return send_file(output, as_attachment=True, download_name="converted.xlsx")
 
 
@@ -322,5 +294,6 @@ def too_large(_):
     return jsonify(error="File is too large. Maximum size is 25 MB."), 413
 
 
+# For local testing
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
